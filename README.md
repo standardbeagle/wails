@@ -1,3 +1,10 @@
+---
+> **📌 FORK NOTICE**: This is a fork of [wailsapp/wails](https://github.com/wailsapp/wails) maintained by [standardbeagle](https://github.com/standardbeagle) for developing a plugin system. The goal is to implement a comprehensive plugin architecture that can be merged upstream. See the [Plugin Development Guide](PLUGIN_DEVELOPMENT.md) for more information.
+>
+> **Branch**: `feature/plugin-system` - All plugin system development happens here  
+> **Upstream Sync**: This fork tracks upstream changes and will regularly sync with the main Wails repository
+---
+
 <p align="center" style="text-align: center">
   <img src="./assets/images/logo-universal.png" width="55%"><br/>
 </p>
