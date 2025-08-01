@@ -30,6 +30,14 @@ type BuildHook interface {
 	PostBuild(ctx *BuildContext) error // Called after build completes
 }
 
+// DevHook provides hooks into the Wails development server.
+// Plugins implementing this interface can respond to dev server events.
+type DevHook interface {
+	Plugin
+	PreDev(ctx *DevContext) error  // Called before dev server starts
+	PostDev(ctx *DevContext) error // Called after dev server stops
+}
+
 // CodeGenerator allows plugins to generate code during build process.
 // Useful for creating bindings, type definitions, or other generated files.
 type CodeGenerator interface {

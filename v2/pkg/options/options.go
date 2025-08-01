@@ -101,6 +101,10 @@ type App struct {
 
 	// DisablePanicRecovery disables the panic recovery system in messages processing
 	DisablePanicRecovery bool
+
+	// Plugins contains plugin system configuration
+	// This is optional - when nil, plugins are disabled
+	Plugins *PluginOptions `json:"plugins,omitempty"`
 }
 
 type ErrorFormatter func(error) any

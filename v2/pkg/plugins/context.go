@@ -208,6 +208,39 @@ type MemoryInfo struct {
 	Swap      int64 // Swap usage in bytes
 }
 
+// DevContext provides context for development server operations.
+// Contains information about the development environment and server.
+type DevContext struct {
+	context.Context
+
+	// Project information
+	ProjectRoot string // Absolute path to project root
+	ProjectName string // Project name
+
+	// Development server information
+	ServerPort string // Port the dev server is running on
+	ServerHost string // Host the dev server is bound to
+	AssetDir   string // Directory serving assets
+
+	// Frontend DevServer URL (if external)
+	FrontendDevServerURL string
+
+	// Development configuration
+	Environment string            // Always "development"
+	Debug       bool              // Debug mode enabled
+	LogLevel    string            // Current log level
+	Variables   map[string]string // Environment variables
+
+	// Start time
+	StartTime time.Time // When dev mode started
+
+	// Plugin data
+	PluginData map[string]interface{} // Data shared between plugins
+
+	// Logging
+	Logger Logger
+}
+
 // Logger defines the interface for plugin logging.
 // Allows plugins to log messages through the Wails logging system.
 type Logger interface {

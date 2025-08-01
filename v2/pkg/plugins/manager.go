@@ -202,6 +202,8 @@ func (m *Manager) ExecuteHook(hookName string, ctx interface{}) error {
 	switch hookName {
 	case "PreBuild", "PostBuild":
 		interfaceType = (*BuildHook)(nil)
+	case "PreDev", "PostDev":
+		interfaceType = (*DevHook)(nil)
 	case "OnFileChanged":
 		interfaceType = (*FileWatcher)(nil)
 	case "GenerateCode":

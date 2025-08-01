@@ -12,12 +12,54 @@ import (
 	"github.com/wailsapp/wails/v2/internal/logger"
 	"github.com/wailsapp/wails/v2/internal/menumanager"
 	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/plugins"
 )
 
 func (a *App) Run() error {
+	// Execute pre-build hooks for production
+	if a.pluginManager != nil {
+		buildCtx := &plugins.BuildContext{
+			Context:      context.Background(),
+			ProjectRoot:  "", // Will be set by build system
+			ProjectName:  "", // Will be set by build system
+			OutputDir:    "", // Will be set by build system
+			BuildMode:    "production",
+			Platform:     "", // Will be set by build system
+			Architecture: "", // Will be set by build system
+			Tags:         []string{},
+			LDFlags:      []string{},
+			Environment:  make(map[string]string),
+			WailsConfig:  a.options,
+			PluginData:   make(map[string]interface{}),
+			Logger:       &pluginLoggerAdapter{logger: a.logger},
+		}
+
+		if err := a.ExecuteBuildHook("PreBuild", buildCtx); err != nil {
+			a.logger.Error("Pre-build hook failed: %v", err)
+			return err
+		}
+
+		// Store build context for post hooks
+		a.ctx = context.WithValue(a.ctx, "buildCtx", buildCtx)
+	}
+
 	err := a.frontend.Run(a.ctx)
 	a.frontend.RunMainLoop()
 	a.frontend.WindowClose()
+
+	// Execute post-build hooks
+	if a.pluginManager != nil {
+		if buildCtx, ok := a.ctx.Value("buildCtx").(*plugins.BuildContext); ok {
+			if hookErr := a.ExecuteBuildHook("PostBuild", buildCtx); hookErr != nil {
+				a.logger.Error("Post-build hook failed: %v", hookErr)
+				// Return the original error if there was one, otherwise the hook error
+				if err == nil {
+					err = hookErr
+				}
+			}
+		}
+	}
+
 	if a.shutdownCallback != nil {
 		a.shutdownCallback(a.ctx)
 	}
@@ -97,6 +139,12 @@ func CreateApp(appoptions *options.App) (*App, error) {
 		debug:            debug,
 		devtoolsEnabled:  devtoolsEnabled,
 		options:          appoptions,
+	}
+
+	// Initialize plugins if configured
+	if err = result.InitializePlugins(appoptions); err != nil {
+		myLogger.Error("Plugin initialization failed: %v", err)
+		// Continue even if plugin initialization fails (unless required)
 	}
 
 	return result, nil

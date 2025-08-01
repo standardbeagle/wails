@@ -26,12 +26,62 @@ import (
 	"github.com/wailsapp/wails/v2/internal/menumanager"
 	pkglogger "github.com/wailsapp/wails/v2/pkg/logger"
 	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/plugins"
 )
 
 func (a *App) Run() error {
+	// Execute pre-dev hooks
+	if a.pluginManager != nil {
+		devCtx := &plugins.DevContext{
+			Context:              context.Background(),
+			ProjectRoot:          "", // Will be set by build system
+			ProjectName:          "", // Will be set by build system
+			ServerPort:           "", // Will be extracted from context
+			ServerHost:           "", // Will be extracted from context
+			AssetDir:             "", // Will be extracted from context
+			FrontendDevServerURL: "", // Will be extracted from context
+			Environment:          "development",
+			Debug:                true,
+			LogLevel:             a.options.LogLevel.String(),
+			Variables:            make(map[string]string),
+			StartTime:            time.Now(),
+			PluginData:           make(map[string]interface{}),
+			Logger:               &pluginLoggerAdapter{logger: a.logger},
+		}
+
+		// Extract values from context if available
+		if serverPort, ok := a.ctx.Value("assetserverport").(string); ok {
+			devCtx.ServerPort = serverPort
+		}
+		if assetDir, ok := a.ctx.Value("assetdir").(string); ok {
+			devCtx.AssetDir = assetDir
+		}
+		if frontendURL, ok := a.ctx.Value("frontenddevserverurl").(string); ok {
+			devCtx.FrontendDevServerURL = frontendURL
+		}
+
+		if err := a.ExecuteDevHook("PreDev", devCtx); err != nil {
+			// Log but continue
+			a.logger.Warning("Pre-dev hook errors: %v", err)
+		}
+
+		// Store dev context for post hooks
+		a.ctx = context.WithValue(a.ctx, "devCtx", devCtx)
+	}
+
 	err := a.frontend.Run(a.ctx)
 	a.frontend.RunMainLoop()
 	a.frontend.WindowClose()
+
+	// Execute post-dev hooks
+	if a.pluginManager != nil {
+		if devCtx, ok := a.ctx.Value("devCtx").(*plugins.DevContext); ok {
+			if err := a.ExecuteDevHook("PostDev", devCtx); err != nil {
+				a.logger.Warning("Post-dev hook errors: %v", err)
+			}
+		}
+	}
+
 	if a.shutdownCallback != nil {
 		a.shutdownCallback(a.ctx)
 	}
@@ -244,6 +294,12 @@ func CreateApp(appoptions *options.App) (*App, error) {
 	}
 
 	result.options = appoptions
+
+	// Initialize plugins if configured
+	if err = result.InitializePlugins(appoptions); err != nil {
+		myLogger.Error("Plugin initialization failed: %v", err)
+		// Continue even if plugin initialization fails (unless required)
+	}
 
 	return result, nil
 
