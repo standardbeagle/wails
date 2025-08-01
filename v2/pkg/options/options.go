@@ -2,6 +2,7 @@ package options
 
 import (
 	"context"
+	"fmt"
 	"html"
 	"io/fs"
 	"net/http"
@@ -101,6 +102,9 @@ type App struct {
 
 	// DisablePanicRecovery disables the panic recovery system in messages processing
 	DisablePanicRecovery bool
+
+	// Plugin system configuration (optional)
+	Plugins *PluginSystemConfig `json:"plugins,omitempty"`
 }
 
 type ErrorFormatter func(error) any
@@ -130,6 +134,18 @@ func NewRGB(r, g, b uint8) *RGBA {
 		B: b,
 		A: 255,
 	}
+}
+
+// Validate validates the app configuration
+func (a *App) Validate() error {
+	// Validate plugin configuration if present
+	if a.Plugins != nil {
+		if err := a.Plugins.Validate(); err != nil {
+			return fmt.Errorf("plugin configuration error: %w", err)
+		}
+	}
+	
+	return nil
 }
 
 // MergeDefaults will set the minimum default values for an application
@@ -182,6 +198,9 @@ func MergeDefaults(appoptions *App) {
 
 	// Process Drag Options
 	processDragOptions(appoptions)
+
+	// Process Plugin Options
+	processPluginOptions(appoptions)
 }
 
 type SingleInstanceLock struct {
@@ -270,4 +289,11 @@ func processMinMaxConstraints(appoptions *App) {
 func processDragOptions(appoptions *App) {
 	appoptions.CSSDragProperty = html.EscapeString(appoptions.CSSDragProperty)
 	appoptions.CSSDragValue = html.EscapeString(appoptions.CSSDragValue)
+}
+
+func processPluginOptions(appoptions *App) {
+	// Set plugin defaults if plugins are configured
+	if appoptions.Plugins != nil {
+		appoptions.Plugins.SetDefaults()
+	}
 }
