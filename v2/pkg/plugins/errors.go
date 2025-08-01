@@ -193,6 +193,21 @@ func NewValidationError(plugin string) *ValidationError {
 	}
 }
 
+// PluginHookError indicates an error during hook execution.
+type PluginHookError struct {
+	Plugin string // Name of the plugin
+	Hook   string // Name of the hook
+	Err    error  // The actual error
+}
+
+func (e *PluginHookError) Error() string {
+	return fmt.Sprintf("plugin '%s' hook '%s' failed: %v", e.Plugin, e.Hook, e.Err)
+}
+
+func (e *PluginHookError) Unwrap() error {
+	return e.Err
+}
+
 // PluginPanicError wraps panics that occur in plugins.
 type PluginPanicError struct {
 	Plugin   string      // Name of the plugin
