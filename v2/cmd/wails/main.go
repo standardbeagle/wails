@@ -86,6 +86,9 @@ func main() {
 	generate.NewSubCommandFunction("module", "Generates a new Wails module", generateModule)
 	generate.NewSubCommandFunction("template", "Generates a new Wails template", generateTemplate)
 
+	// Register plugin commands
+	registerPluginCommands(app)
+
 	command := app.NewSubCommand("version", "The Wails CLI version")
 	command.Action(func() error {
 		pterm.Println(internal.Version)
