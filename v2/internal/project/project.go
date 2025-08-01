@@ -100,6 +100,9 @@ type Project struct {
 	ViteServerTimeout int `json:"viteServerTimeout"`
 
 	Bindings Bindings `json:"bindings"`
+
+	// Plugin system configuration
+	Plugins *PluginSystemConfig `json:"plugins,omitempty"`
 }
 
 func (p *Project) GetFrontendDir() string {

@@ -1,11 +1,13 @@
 package build
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/google/shlex"
 	"github.com/pterm/pterm"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/internal/staticanalysis"
 	"github.com/wailsapp/wails/v2/pkg/commands/bindings"
+	"github.com/wailsapp/wails/v2/pkg/plugins"
 
 	"github.com/wailsapp/wails/v2/internal/fs"
 
@@ -70,6 +73,7 @@ type Options struct {
 	GarbleArgs        string               // The arguments for Garble
 	SkipBindings      bool                 // Skip binding generation
 	SkipEmbedCreate   bool                 // Skip creation of embed files
+	SkipPlugins       bool                 // Skip plugin execution
 }
 
 // Build the project!
@@ -110,6 +114,40 @@ func Build(options *Options) (string, error) {
 	// Initialise Builder
 	builder.SetProjectData(options.ProjectData)
 
+	// Initialize plugin manager if enabled
+	var pluginManager *plugins.Manager
+	if !options.SkipPlugins && options.ProjectData.Plugins != nil && options.ProjectData.Plugins.Enabled {
+		pluginManager, err = initializePluginManager(options.ProjectData)
+		if err != nil {
+			outputLogger.Warn("Plugin initialization failed", "error", err)
+			// Continue without plugins unless required
+			if options.ProjectData.Plugins.Required {
+				return "", fmt.Errorf("required plugins failed: %w", err)
+			}
+		}
+	}
+
+	// Create build context for plugins
+	var buildCtx *plugins.BuildContext
+	if pluginManager != nil {
+		buildCtx = &plugins.BuildContext{
+			Context:     context.Background(),
+			ProjectRoot: options.ProjectData.Path,
+			OutputDir:   options.BinDirectory,
+			BuildMode:   getBuildMode(options),
+			Platform:    options.Platform,
+			Arch:        options.Arch,
+			Logger:      outputLogger,
+			StartTime:   time.Now(),
+		}
+
+		// Execute pre-build hooks
+		outputLogger.Info("Executing pre-build hooks...")
+		if err := executePreBuildHooks(pluginManager, buildCtx); err != nil {
+			return "", fmt.Errorf("pre-build hooks failed: %w", err)
+		}
+	}
+
 	hookArgs := map[string]string{
 		"${platform}": options.Platform + "/" + options.Arch,
 	}
@@ -124,6 +162,14 @@ func Build(options *Options) (string, error) {
 	if !options.SkipEmbedCreate {
 		if err := CreateEmbedDirectories(cwd, options); err != nil {
 			return "", err
+		}
+	}
+
+	// Run plugin code generation before binding generation
+	if pluginManager != nil {
+		outputLogger.Info("Running plugin code generation...")
+		if err := executeCodeGeneration(pluginManager, options.ProjectData, buildCtx); err != nil {
+			return "", fmt.Errorf("code generation failed: %w", err)
 		}
 	}
 
@@ -156,6 +202,14 @@ func Build(options *Options) (string, error) {
 			}
 		}
 
+		// Execute post-build hooks
+		if pluginManager != nil {
+			outputLogger.Info("Executing post-build hooks...")
+			if err := executePostBuildHooks(pluginManager, buildCtx); err != nil {
+				// Post-build errors are warnings
+				outputLogger.Warn("Post-build hooks had errors", "error", err)
+			}
+		}
 	}
 	return compileBinary, nil
 }
