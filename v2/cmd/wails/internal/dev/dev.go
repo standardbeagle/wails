@@ -26,6 +26,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/wailsapp/wails/v2/pkg/commands/buildtags"
+	"github.com/wailsapp/wails/v2/pkg/plugins"
 
 	"github.com/google/shlex"
 
@@ -53,6 +54,12 @@ func sliceToMap(input []string) map[string]struct{} {
 // Application runs the application in dev mode
 func Application(f *flags.Dev, logger *clilogger.CLILogger) error {
 	cwd := lo.Must(os.Getwd())
+
+	// Initialize plugin manager if enabled (will be extended once plugin manager is fully implemented)
+	var pluginManager *plugins.Manager
+	// TODO: Replace this with actual plugin configuration checking once implemented
+	// For now, we'll leave this as nil to not break existing functionality
+	_ = pluginManager // Suppress unused variable warning
 
 	// Update go.mod to use current wails version
 	err := gomod.SyncGoMod(logger, !f.NoSyncGoMod)
@@ -158,7 +165,7 @@ func Application(f *flags.Dev, logger *clilogger.CLILogger) error {
 	}()
 
 	// Watch for changes and trigger restartApp()
-	debugBinaryProcess, err = doWatcherLoop(cwd, projectConfig.ReloadDirectories, buildOptions, debugBinaryProcess, f, exitCodeChannel, quitChannel, f.DevServerURL(), legacyUseDevServerInsteadofCustomScheme)
+	debugBinaryProcess, err = doWatcherLoop(cwd, projectConfig.ReloadDirectories, buildOptions, debugBinaryProcess, f, exitCodeChannel, quitChannel, f.DevServerURL(), legacyUseDevServerInsteadofCustomScheme, pluginManager)
 	if err != nil {
 		return err
 	}
@@ -331,12 +338,19 @@ func restartApp(buildOptions *build.Options, debugBinaryProcess *process.Process
 }
 
 // doWatcherLoop is the main watch loop that runs while dev is active
-func doWatcherLoop(cwd string, reloadDirs string, buildOptions *build.Options, debugBinaryProcess *process.Process, f *flags.Dev, exitCodeChannel chan int, quitChannel chan os.Signal, devServerURL *url.URL, legacyUseDevServerInsteadofCustomScheme bool) (*process.Process, error) {
+func doWatcherLoop(cwd string, reloadDirs string, buildOptions *build.Options, debugBinaryProcess *process.Process, f *flags.Dev, exitCodeChannel chan int, quitChannel chan os.Signal, devServerURL *url.URL, legacyUseDevServerInsteadofCustomScheme bool, pluginManager *plugins.Manager) (*process.Process, error) {
 	// create the project files watcher
 	watcher, err := initialiseWatcher(cwd, reloadDirs)
 	if err != nil {
 		logutils.LogRed("Unable to create filesystem watcher. Reloads will not occur.")
 		return nil, err
+	}
+
+	// Add plugin watch paths if plugin manager is available
+	if pluginManager != nil {
+		if err := addPluginWatchPaths(watcher, pluginManager, cwd, buildOptions.Logger); err != nil {
+			logutils.LogRed("Failed to add plugin watch paths: %v", err)
+		}
 	}
 
 	defer func(watcher *fsnotify.Watcher) {
@@ -412,6 +426,11 @@ func doWatcherLoop(cwd string, reloadDirs string, buildOptions *build.Options, d
 					continue
 				}
 
+				// Notify plugins of file changes
+				if pluginManager != nil {
+					notifyPluginsFileChange(pluginManager, itemName, "modified", cwd, buildOptions.Logger)
+				}
+
 				if isEligibleFile(itemName) {
 					rebuild = true
 					timer.Reset(interval)
@@ -434,6 +453,11 @@ func doWatcherLoop(cwd string, reloadDirs string, buildOptions *build.Options, d
 
 			// Handle new fs entries that are created
 			if item.Op&fsnotify.Create == fsnotify.Create {
+				// Notify plugins of file changes
+				if pluginManager != nil {
+					notifyPluginsFileChange(pluginManager, item.Name, "created", cwd, buildOptions.Logger)
+				}
+				
 				// If this is a folder, add it to our watch list
 				if fs.DirExists(item.Name) {
 					// node_modules is BANNED!
@@ -522,4 +546,124 @@ func joinPath(url *url.URL, subPath string) string {
 	u := *url
 	u.Path = path.Join(u.Path, subPath)
 	return u.String()
+}
+
+// addPluginWatchPaths adds plugin-defined watch paths to the file watcher
+func addPluginWatchPaths(watcher *fsnotify.Watcher, pluginManager *plugins.Manager, projectRoot string, logger interface{}) error {
+	// Get all plugins that are active (in ready state)
+	allPlugins := pluginManager.GetPluginsByType((*plugins.Plugin)(nil))
+
+	for _, plugin := range allPlugins {
+		if fw, ok := plugin.(plugins.FileWatcher); ok {
+			paths, err := fw.GetWatchPaths(projectRoot)
+			if err != nil {
+				if l, ok := logger.(interface{ Warn(string, ...interface{}) }); ok {
+					l.Warn("Failed to get watch paths for plugin %s: %v", plugin.Name(), err)
+				}
+				continue
+			}
+
+			for _, path := range paths {
+				if err := watcher.Add(path); err != nil {
+					if l, ok := logger.(interface{ Warn(string, ...interface{}) }); ok {
+						l.Warn("Failed to watch path %s for plugin %s: %v", path, plugin.Name(), err)
+					}
+				} else {
+					logutils.LogGreen("Watching path for plugin %s: %s", plugin.Name(), path)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// notifyPluginsFileChange notifies all FileWatcher plugins of file changes
+func notifyPluginsFileChange(pluginManager *plugins.Manager, filePath, changeType, projectRoot string, logger interface{}) {
+	// Get all plugins that are active (in ready state)
+	allPlugins := pluginManager.GetPluginsByType((*plugins.Plugin)(nil))
+
+	// Create relative path from project root
+	relPath, err := filepath.Rel(projectRoot, filePath)
+	if err != nil {
+		relPath = filePath // Use absolute path if relative fails
+	}
+
+	ctx := &plugins.FileChangeContext{
+		Context:     context.Background(),
+		ProjectRoot: projectRoot,
+		FilePath:    relPath,
+		ChangeType:  changeType,
+		OldPath:     "",
+		Timestamp:   time.Now(),
+		IsDirectory: fs.DirExists(filePath),
+		FileSize:    0,
+		Checksum:    "",
+		PluginData:  make(map[string]interface{}),
+		Logger:      &pluginLoggerWrapper{logger: logger},
+	}
+
+	// Get file size if it's a file
+	if !ctx.IsDirectory {
+		if info, err := os.Stat(filePath); err == nil {
+			ctx.FileSize = info.Size()
+		}
+	}
+
+	for _, plugin := range allPlugins {
+		if fw, ok := plugin.(plugins.FileWatcher); ok {
+			go func(fw plugins.FileWatcher, pluginName string) {
+				if err := fw.OnFileChanged(ctx); err != nil {
+					if l, ok := logger.(interface{ Warn(string, ...interface{}) }); ok {
+						l.Warn("Plugin %s file change handler error: %v", pluginName, err)
+					}
+				}
+			}(fw, plugin.Name())
+		}
+	}
+}
+
+// pluginLoggerWrapper wraps the logger to implement the plugins.Logger interface
+type pluginLoggerWrapper struct {
+	logger interface{}
+}
+
+func (w *pluginLoggerWrapper) Debug(msg string, args ...interface{}) {
+	if l, ok := w.logger.(interface{ Debug(string, ...interface{}) }); ok {
+		l.Debug(msg, args...)
+	}
+}
+
+func (w *pluginLoggerWrapper) Info(msg string, args ...interface{}) {
+	if l, ok := w.logger.(interface{ Info(string, ...interface{}) }); ok {
+		l.Info(msg, args...)
+	}
+}
+
+func (w *pluginLoggerWrapper) Warn(msg string, args ...interface{}) {
+	if l, ok := w.logger.(interface{ Warn(string, ...interface{}) }); ok {
+		l.Warn(msg, args...)
+	}
+}
+
+func (w *pluginLoggerWrapper) Error(msg string, args ...interface{}) {
+	if l, ok := w.logger.(interface{ Error(string, ...interface{}) }); ok {
+		l.Error(msg, args...)
+	}
+}
+
+func (w *pluginLoggerWrapper) Fatal(msg string, args ...interface{}) {
+	if l, ok := w.logger.(interface{ Fatal(string, ...interface{}) }); ok {
+		l.Fatal(msg, args...)
+	}
+}
+
+func (w *pluginLoggerWrapper) WithField(key string, value interface{}) plugins.Logger {
+	// Simple implementation - could be enhanced with structured logging
+	return w
+}
+
+func (w *pluginLoggerWrapper) WithFields(fields map[string]interface{}) plugins.Logger {
+	// Simple implementation - could be enhanced with structured logging
+	return w
 }
